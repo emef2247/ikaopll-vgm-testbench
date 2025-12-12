@@ -1,36 +1,138 @@
-# IKAOPLL
-YM2413のFPGA向けVerilogコアです。ヤマハのデータシートとMadovさんとTravis Goodspeedさんのダイショットを見て、リバースエンジニアリングしました。９ビットデジタル出力のデザインとVRC7パッチは[nukeykt](https://github.com/nukeykt)さんの[ソース](https://github.com/nukeykt/Nuked-SMS-FPGA/blob/main/ym2413.v)を参考にしました。© 2024 Sehyeon Kim(Raki) 
+# ikaopll-vgm-testbench
 
-<p align=center><img alt="header image" src="./docs/ikamusume_dx7.jpg" height="auto" width="640"></p>
+Experimental YM2413 (OPLL) testbench using the IKAOPLL core and VGM/CSV playback.
 
-著作権のあるイメージです。ヘッダー画像としての使用の許可済。絵師は[SEONGSU](https://twitter.com/seongsu_twit)。
+このリポジトリは、元の [IKAOPLL](https://github.com/ika-musume/IKAOPLL) コア（Sehyeon Kim 氏, Raki）の上に構築した、**スタンドアロンのシミュレーション用プレイグラウンド**です。
 
-## 特徴
-* **cycle-accurate、シリコン解析基盤**の、BSD2ライセンスコア。
-* 実際のチップの大体の信号を正確にエミュレート。
-* ３つのデジタル出力を用意。
-* 全てのLSIテストビットを実装。
-* 使いやすい、**LPFが必要ない16ビットアキュムレート出力とミキサー**を内装。
+主な目的は:
 
-## インスタンス化
-インスタンス化の方法は、[英語版のREADME](README.md)をご参照ください。
+- YM2413 (OPLL) の動作を **VGM 由来のレジスタ書き込みトレース**で検証すること
+- 将来、VGM プレーヤ／エミュレータに IKAOPLL コアを組み込むための足場を作ること
 
+です。
 
-**パラメータ**
-* `FULLY_SYNCHRONOUS` **1** コア全体をマスタークロック同期します。（基本、おすすめ）全ての非同期制御信号入力に2-FFシンクロナイザーが付けられます。従って、全ての書き込み動作は２クロック遅延されます。**0**の場合、１０個のラッチが使われます。書き込みリクエ用のSRラッチをエミュレートする２つのunsafe Ⅾラッチと、データバスの書き込み値を一時的に格納する８ビットⅮラッチがです。ラッチを使用する際は、ラッチ・イネーブル信号に適切なクロックまたはグローバル信号の属性がちゃんと与えられているか、確認する必要があります。Quartusはいくつかのwarningを表示し、この信号をGCLKとして扱います。ラッチ・イネーブル信号は、コンパイラーにより、クロックとみなされるので、タイミングアナライザの設定ファイルに条件を追加する必要があります。
-* `FAST_RESET` を**0**に設定すると、IKAOPLLの全てのパイプラインのリセットを保証するためには、**`i_EMUCLK`と`i_phiM_PCEN_n`の動作中に少なくとも「phiM」７２サイクル分の長さの`i_IC_n`のアサートが必要です。** **1** の場合、`i_IC_n`がロジックLOWであれば、内部分周器のクロックイネーブルである「phi1_cen」を強制的にイネーブルし、`i_EMUCLK`と同じスピードでパイプラインがリセットされます。チップ全体をリセットするのには「phiM」１８サイクル分の長さのリセットが必要です。
-* `ALTPATCH_CONFIG_MODE` **1**に設定すると、テストレジスタのD[4]を１に設定することで、パッチを切り替えます。**0**にすると、セカンドパッチ(VRC7)のイネーブル信号を外部から提供する必要があります。
-* `USE_PIPELINED_MULTIPLIER`コンパイラがリソースを効率的に利用できるようにします。オリジナルのチップは加算と乗算を「phi1」１サイクルで処理します。
+> 注意: ここは **公式の IKAOPLL リポジトリではありません**。  
+> IKAOPLL 本体およびドキュメントは Sehyeon Kim (Raki) 氏の著作物であり、BSD 2‑Clause License の下で本リポジトリに取り込まれています。
 
+---
 
-**IOポート**
-* `i_EMUCLK` はシステムクロックです。
-* `i_phiM_PCEN_n` は「phiM」のポジティブエッジのクロックイネーブル（負論理）です。
-* `i_IC_n` は同期リセットです。リセット仕様については、上の説明をご参照ください。
-* `o_D_OE`はFPGAのトライステートIOドライバの出力イネーブルです。
-* `O_DAC_EN_MO` と `o_DAC_EN_RO` はオリジナルチップのDAC出力をイネーブルするために使われる信号です。
-* `IMP_NOFLUC_SIGN` はオリジナルチップのstring DACのVrefソース切り替えスイッチをトグルするための信号です。
-* `o_IMP_NOFLUC_MAG` はオリジナルチップのstring DACのタップスイッチを有効にするための信号です。
-* `o_IMP_FLUC_SIGNED_MO` と `o_IMP_FLUC_SIGNED_RO` は最終的なサウンドの９ビットデジタル出力です。オリジナルDAC設計の欠陥によるゼロレベルの揺らぎをエミュレートします。
-* `ACC_SIGNED_STRB`は１６ビットaccumulatedデジタル出力のストローブ信号です。このストローブ信号のポジティブエッジで、外部DFFを使用したデータのサンプリングが可能です。デューティサイクルは50%固定です。
-* `o_ACC_SIGNED` は１６ビットaccumulatedデジタル出力です。オリジナルDACはリズム音のインパルスを２回出力するので、符号あり５ビットのスケーリングファクターを与えることで、各チャンネルの音量を調整することができます。デフォルト値はFMが+2、リズムが+3です。
+## 内容物
+
+- `src/IKAOPLL.v`, `src/IKAOPLL_modules/…`  
+  オリジナルの IKAOPLL YM2413 コア（コードは基本的に無改変）。
+
+- `src/IKAOPLL_tb.sv`  
+  IKAOPLL 元リポジトリが提供しているオリジナルのテストベンチ。
+
+- `src/IKAOPLL_vgm_tb.sv`  
+  本プロジェクト用に追加した SystemVerilog テストベンチ:
+  - 実機 YM2413 に近い約 3.58 MHz の `EMUCLK` を生成
+  - `FAST_RESET` の仕様に従ったリセットシーケンス
+  - IKAOPLL のバスタイミングに合わせた書き込みタスク（iverilog 互換）
+  - VCD (Value Change Dump) の自動生成による波形デバッグ
+  - DAC 出力 (`o_DAC_EN_MO` / `o_IMP_FLUC_SIGNED_MO`) のコンソール出力
+  - （今後予定）VGM→CSV 化したレジスタトレースを読み込んで駆動
+
+- `tests/*.vgm.csv`  
+  **openMSX 上で動作する MSX + MSGDRV** から取得した YM2413 レジスタ書き込みトレースを、  
+  一度 VGM としてキャプチャしたのち、CSV に変換したものです。主な内容:
+
+  - クロマチックスケール、ブロック境界などのスケール系パターン
+  - リズムモードの ON/OFF テスト
+  - パッチチェンジ・レガート・リトリガの挙動確認
+  - 冗長な FNUM 書き込み、音量スイープなど
+
+- `doc/tb_design_plan.md`  
+  新しい VGM 指向テストベンチ (`IKAOPLL_vgm_tb.sv`) の設計メモ・方針。
+
+- `docs/…`  
+  YM2413 のデータシート／アプリケーションマニュアル／回路図／参考画像などの資料一式。
+
+---
+
+## 現在のステータス
+
+現時点でできていること:
+
+- **iverilog** 上で IKAOPLL コアをインスタンスして動作させることができる。
+- 新しいテストベンチ `IKAOPLL_vgm_tb.sv` により:
+  - 実 OPLL に近い `EMUCLK` の生成
+  - リセットシーケンスの発行
+  - バス書き込みタスクによるレジスタ設定
+  - VCD 出力による波形デバッグ
+  - `o_DAC_EN_MO` / `o_IMP_FLUC_SIGNED_MO` のコンソールログ
+
+まで確認済みです。
+
+今後の予定:
+
+1. DAC 出力（例: `IMP_FLUC_MO`）をテキストファイルに記録するロガーの追加。
+2. VGM→CSV のテストパターンをテストベンチから再生するロジックの実装:
+   - `tests/ym2413_*.vgm.csv` の 1 行ごとに delay / reg / data を解釈
+   - VGM の delay（1/44100 秒単位）を EMUCLK のクロック数に変換
+   - 適切なタイミングでアドレス／データの書き込みタスクを発行
+3. 記録したサンプル列から 44.1 kHz WAV を生成するための簡易スクリプト（例: Python）の用意。
+
+---
+
+## iverilog によるビルドと実行
+
+リポジトリのルートで:
+
+```bash
+# ビルド（SystemVerilog 対応の iverilog が必要）
+iverilog -g2012 -o ikaopll_vgm_tb.vvp \
+  src/IKAOPLL.v \
+  src/IKAOPLL_modules/IKAOPLL_*.v \
+  src/IKAOPLL_vgm_tb.sv
+
+# 実行
+vvp ikaopll_vgm_tb.vvp
+```
+
+実行すると:
+
+- `ikaopll_vgm_tb.vcd` が生成され、GTKWave などで波形が見られます。
+- 標準出力には DAC のアクティビティが表示されます。例:
+
+```text
+VCD info: dumpfile ikaopll_vgm_tb.vcd opened for output.
+[321264] DAC_EN_MO=1 IMP_FLUC_MO=1 (0x001)
+…
+```
+
+波形を確認するには:
+
+```bash
+gtkwave ikaopll_vgm_tb.vcd &
+```
+
+を実行し、以下の信号を追加すると状況が追いやすいです。
+
+- 上位信号:
+  - `IC_n`, `EMUCLK`
+  - `CS_n`, `WR_n`, `A0`, `DIN`
+- DAC/出力:
+  - `o_DAC_EN_MO`, `o_IMP_FLUC_SIGNED_MO`
+- 内部レジスタ（必要に応じて）:
+  - `dut.u_REG.fnum`
+  - `dut.u_REG.block`
+  - `dut.u_REG.kon`
+  など
+
+---
+
+## ライセンスとクレジット
+
+- IKAOPLL コア（`src/IKAOPLL.v`, `src/IKAOPLL_modules/…`）および元のドキュメントは:
+  - © 2024 Sehyeon Kim (Raki)
+  - **BSD 2‑Clause License** の下で配布されています（詳細は [LICENSE](LICENSE) を参照してください）。
+
+- 本リポジトリで追加したファイル（テストベンチ、CSV テスト、設計メモなど）も、
+  互換性とシンプルさのために **同じ BSD 2‑Clause License** の下で公開することを意図しています。
+
+本プロジェクトを利用する際は、オリジナルの IKAOPLL 作者およびリポジトリへのクレジットもぜひ明示してください:
+
+- [IKAOPLL on GitHub](https://github.com/ika-musume/IKAOPLL)
+
+--- 
