@@ -24,6 +24,7 @@ out_from_*.wav
 out_from_sim.wav
 run_*.log
 *.log
+*.txt
 
 # GTKWave and GUI artifacts
 *.gtkw
