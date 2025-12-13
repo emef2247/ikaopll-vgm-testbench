@@ -1,11 +1,5 @@
 `timescale 10ps/10ps
 
-// IKAOPLL_vgm_tb.sv
-//  - IKAOPLL_tb_simple.sv と同じクロック / リセット / バスタイミング
-//  - tools/vgm_csv_to_vh.py が生成した tests/ym2413_scale_chromatic.vh
-//    を include して、VGM 由来のパターンを流す
-//  - MO 側 DAC 出力 IMP_FLUC_MO を samples_mo.txt に記録
-
 module IKAOPLL_vgm_tb;
 
     // ------------------------------------------------------------
@@ -17,10 +11,10 @@ module IKAOPLL_vgm_tb;
     end
 
     // ------------------------------------------------------------
-    // Clock (~3.579545 MHz, original tb と同じ)
+    // Clock (~3.579545 MHz)
     // ------------------------------------------------------------
     reg EMUCLK = 1'b0;
-    always #13968 EMUCLK = ~EMUCLK;   // half-period 13968 * 10ps
+    always #13968 EMUCLK = ~EMUCLK;
 
     reg [1:0] clkdiv  = 2'd0;
     reg       phiMref = 1'b0;
@@ -29,8 +23,7 @@ module IKAOPLL_vgm_tb;
         if (clkdiv == 2'd3) begin
             clkdiv  <= 2'd0;
             phiMref <= 1'b1;
-        end
-        else begin
+        end else begin
             clkdiv <= clkdiv + 2'd1;
             if (clkdiv == 2'd1)
                 phiMref <= 1'b0;
@@ -47,6 +40,7 @@ module IKAOPLL_vgm_tb;
         IC_n = 1'b0;
         repeat (64) @(posedge EMUCLK);
         IC_n = 1'b1;
+        $display("[TB] Reset deasserted at %0t", $time);
     end
 
     // ------------------------------------------------------------
@@ -108,24 +102,78 @@ module IKAOPLL_vgm_tb;
         .o_ACC_SIGNED             (ACC_SIGNED)
     );
 
+    // ========================================================================
+    //  phiM カウンタ（Wait 管理用）
+    // ========================================================================
+    integer phiM_cnt = 0;
+
+    always @(posedge EMUCLK or negedge IC_n) begin
+        if (!IC_n)
+            phiM_cnt <= 0;
+        else if (phiMref)
+            phiM_cnt <= phiM_cnt + 1;
+    end
+
+    // 前回アクセス種別: 0=NONE, 1=ADDR, 2=DATA
+    integer last_op_kind = 0;
+    integer last_op_phiM = 0;
+
+    localparam integer LAST_NONE = 0;
+    localparam integer LAST_ADDR = 1;
+    localparam integer LAST_DATA = 2;
+
+    // 最低ウェイト
+    localparam integer MIN_WAIT_ADDR = 12;
+    localparam integer MIN_WAIT_DATA = 84;
+
+    task automatic wait_phiM_cycles(input integer n);
+        integer i;
+        begin
+            for (i = 0; i < n; i = i + 1)
+                @(posedge phiMref);
+        end
+    endtask
+
     // ------------------------------------------------------------
-    // Bus write task (7 引数版, .vh と一致)
-    //   ただし実際には TB 内の CS_n/WR_n/A0/DIN を直接操作する。
+    // Bus write task (Wait 強制版)
     // ------------------------------------------------------------
     task IKAOPLL_write;
         input        i_TARGET_ADDR;  // 0 = address, 1 = data
         input  [7:0] i_WRITE_DATA;
-        input        i_CLK;          // .vh からは phiMref が渡されるが未使用
-        inout        o_CS_n;         // ダミー（接続はするが中では使わない）
+        input        i_CLK;          // 未使用
+        inout        o_CS_n;         // ダミー
         inout        o_WR_n;
         inout        o_A0;
         inout  [7:0] o_DATA;
     begin
-        // デバッグ出力（必要なければ消してOK）
-        $display("[TB] IKAOPLL_write call: A0=%0d DATA=%02h time=%0t",
-                 i_TARGET_ADDR, i_WRITE_DATA, $time);
+        integer need_wait;
+        integer now_phiM;
 
-        // ここからは simple 版と同じく、モジュール内の CS_n/WR_n/A0/DIN を直に叩く
+        now_phiM = phiM_cnt;
+
+        case (last_op_kind)
+            LAST_ADDR: need_wait = MIN_WAIT_ADDR;
+            LAST_DATA: need_wait = MIN_WAIT_DATA;
+            default:   need_wait = 0;
+        endcase
+
+        if (need_wait > 0) begin
+            integer diff;
+            diff = now_phiM - last_op_phiM;
+            if (diff < need_wait) begin
+                integer remain;
+                remain = need_wait - diff;
+                $display("[TB] enforcing wait: last_op=%0d, diff=%0d, need=%0d -> wait %0d phiM cycles at %0t",
+                         last_op_kind, diff, need_wait, remain, $time);
+                wait_phiM_cycles(remain);
+                now_phiM = phiM_cnt;
+            end
+        end
+
+        $display("[TB] WRITE %s A0=%0d DATA=%02h at %0t (phiM_cnt=%0d)",
+                 (i_TARGET_ADDR == 1'b0) ? "ADDR" : "DATA",
+                 i_TARGET_ADDR, i_WRITE_DATA, $time, phiM_cnt);
+
         @(posedge phiMref) A0   = i_TARGET_ADDR;
         @(negedge phiMref) CS_n = 1'b0;
         @(posedge phiMref) DIN  = i_WRITE_DATA;
@@ -136,54 +184,127 @@ module IKAOPLL_vgm_tb;
             CS_n = 1'b1;
         end
         @(posedge phiMref) DIN  = 8'h00;
+
+        if (i_TARGET_ADDR == 1'b0)
+            last_op_kind = LAST_ADDR;
+        else
+            last_op_kind = LAST_DATA;
+        last_op_phiM = phiM_cnt;
     end
     endtask
-    // ------------------------------------------------------------
-    // DAC logging (MO, IMP_FLUC_MO)
-    // ------------------------------------------------------------
+
+    // ========================================================================
+    //  ログ機構
+    // ========================================================================
     integer fh_mo;
+    integer fh_dur;
+    integer fh_acc;
+
+    integer cyc_cnt;
+    integer dur_idx;
+
+    longint dur_start_ps;
+    longint dur_end_ps;
+    reg     dur_inited;
+    reg     ACC_STRB_q;
+
     initial begin
         fh_mo = $fopen("samples_mo.txt", "w");
         if (fh_mo == 0) begin
             $display("[TB] ERROR: cannot open samples_mo.txt");
             $finish;
         end
+        fh_dur = $fopen("durations.txt", "w");
+        if (fh_dur == 0) begin
+            $display("[TB] ERROR: cannot open durations.txt");
+            $finish;
+        end
+        fh_acc = $fopen("samples_acc.txt", "w");
+        if (fh_acc == 0) begin
+            $display("[TB] ERROR: cannot open samples_acc.txt");
+            $finish;
+        end
+
+        cyc_cnt      = 0;
+        dur_idx      = 0;
+        dur_start_ps = 0;
+        dur_end_ps   = 0;
+        dur_inited   = 0;
+        ACC_STRB_q   = 1'b0;
+
+        $display("[TB] Logging initialized.");
+    end
+
+    always @(posedge EMUCLK or negedge IC_n) begin
+        if (!IC_n)
+            cyc_cnt <= 0;
+        else
+            cyc_cnt <= cyc_cnt + 1;
+    end
+
+    always @(posedge EMUCLK or negedge IC_n) begin
+        if (!IC_n) begin
+            ACC_STRB_q   <= 1'b0;
+            dur_idx      <= 0;
+            dur_start_ps <= 0;
+            dur_end_ps   <= 0;
+            dur_inited   <= 0;
+        end else begin
+            ACC_STRB_q <= ACC_STRB;
+
+            if (!ACC_STRB_q && ACC_STRB) begin
+                longint now_ps;
+                now_ps = cyc_cnt * 10;
+
+                if (dur_inited) begin
+                    dur_end_ps = now_ps;
+                    $fwrite(fh_dur, "%0d %0d %0d\n",
+                            dur_idx, dur_start_ps, dur_end_ps);
+                    dur_idx <= dur_idx + 1;
+                end
+
+                dur_start_ps = now_ps;
+                dur_inited   = 1'b1;
+            end
+        end
     end
 
     always @(posedge EMUCLK) begin
         if (DAC_EN_MO) begin
-            $fwrite(fh_mo, "%0d\n", $signed(IMP_FLUC_MO));
+            longint time_ps;
+            time_ps = cyc_cnt * 10;
+            $fwrite(fh_mo, "%0d %0d %0d\n",
+                    dur_idx,
+                    $signed(IMP_FLUC_MO),
+                    time_ps);
+        end
+    end
+
+    always @(posedge EMUCLK) begin
+        if (ACC_STRB) begin
+            $fwrite(fh_acc, "%0d\n", $signed(ACC_SIGNED));
         end
     end
 
     // ------------------------------------------------------------
-    // Stimulus: VGM pattern include
+    // Stimulus
     // ------------------------------------------------------------
     initial begin
         @(posedge IC_n);
         repeat (100) @(posedge EMUCLK);
 
-        $display("[TB] Starting VGM pattern from tests/ym2413_scale_chromatic.vh");
+        $display("[TB] Starting VGM pattern from tests/ym2413_scale_chromatic.vh at %0t", $time);
 
-        // ここで .vh を展開（各行が IKAOPLL_write(...) を呼ぶ）
         `include "tests/ym2413_scale_chromatic.vh"
 
-        // パターン終了後の余韻
+        $display("[TB] VGM pattern completed, waiting tail at %0t", $time);
         #10_000_000;
 
-        $display("[TB] VGM pattern completed, finishing.");
+        $display("[TB] Finishing simulation at %0t", $time);
         $fclose(fh_mo);
+        $fclose(fh_dur);
+        $fclose(fh_acc);
         $finish;
     end
-
-    // ------------------------------------------------------------
-    // Global timeout
-    // ------------------------------------------------------------
-    //initial begin
-    //    #200_000_000_000; // 2 s
-    //    $display("[TB] Global timeout, finishing.");
-    //    $fclose(fh_mo);
-    //    $finish;
-    //end
 
 endmodule
