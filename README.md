@@ -6,8 +6,8 @@ This repository also contains a small testbench infrastructure and tools to:
 
 - Convert YM2413 VGM files to a simple CSV format
 - Convert that CSV to a Verilog include file (`.vh`) that drives the IKAOPLL bus
-- Run simulations and export DAC output (`samples_mo.txt`)
-- Convert the text samples to WAV
+- Run simulations and export DAC‑related signals as text
+- Convert the text samples to WAV for listening / analysis
 
 The Japanese version of this document is available in [README.ja.md](README.ja.md).
 
@@ -18,13 +18,19 @@ The Japanese version of this document is available in [README.ja.md](README.ja.m
 - `src/IKAOPLL.v`, `src/IKAOPLL_modules/…`  
   Main IKAOPLL core and submodules
 - `IKAOPLL_vgm_tb.sv`  
-  Testbench that plays a VGM‑derived pattern into IKAOPLL and dumps DAC output
+  Testbench that plays a VGM‑derived pattern into IKAOPLL and dumps DAC‑related outputs
 - `tools/vgm_to_ym2413_csv.py`  
   **Python VGM→CSV converter** for YM2413 commands (used for all tests)
 - `tools/vgm_csv_to_vh.py`  
   CSV→Verilog include converter – generates `IKAOPLL_write(...)` calls
 - `tools/txt_to_wav.py`  
-  Simple text‑to‑WAV converter for `samples_mo.txt`
+  Legacy/simple text‑to‑WAV converter for `samples_mo.txt`
+- **Waveform analysis helpers**
+  - `tools/avg_mo_by_duration.py` – average `IMP_FLUC_MO` per duration index  
+  - `tools/avg_mo_to_wav.py` – convert the averaged series to WAV (with simple smoothing)  
+  - `tools/acc_to_wav.py` – convert `ACC_SIGNED` samples to WAV  
+  - `tools/analyze_mo_range.py` – min/max of `IMP_FLUC_MO` from `samples_mo.txt`  
+  - `tools/analyze_duration.py` – basic statistics of `durations.txt`
 - `tests/*.vgm`  
   YM2413 VGM test patterns
 - `tests/*.vgm.csv`  
@@ -62,7 +68,7 @@ Where:
   - `"01"` → address phase (A0 = 0)
   - `"00"` → data phase (A0 = 1)
 - **data**
-  - Hex string such as `"0E"` or `"0x20"`
+  - Hex string such as `"0E"` or `"20"`
 
 Examples (as used in this repo):
 
@@ -152,20 +158,97 @@ Important details:
 The testbench will:
 
 - Apply reset
-- Play the VGM‑derived bus pattern into IKAOPLL
-- Log the DAC output (`IMP_FLUC_SIGNED_MO`) into `samples_mo.txt`
+- Play the VGM‑derived bus pattern into IKAOPLL (with OPLL‑spec wait times enforced in the TB)
+- Log:
+  - `IMP_FLUC_SIGNED_MO` to `samples_mo.txt`
+  - duration boundaries (from `ACC_STRB`) to `durations.txt`
+  - `ACC_SIGNED` to `samples_acc.txt`
 - Finish when the pattern completes
 
 ---
 
-## Converting `samples_mo.txt` to WAV
+## Converting simulation logs to WAV
 
-Once the simulation finishes, convert the logged samples to WAV:
+There are two main pipelines for listening to the simulated sound:
+
+- **Mo-based** (using `IMP_FLUC_MO` averaged per duration)  
+  – gives a stable, per‑duration envelope‑like signal  
+- **ACC-based** (using `ACC_SIGNED` directly)  
+  – exposes the mixed accumulator output
+
+### 1. Mo-based WAV (recommended for quick checking)
+
+1. **Average Mo per duration**
+
+   ```bash
+   python3 tools/avg_mo_by_duration.py samples_mo.txt
+   ```
+
+   This produces `avg_mo_by_duration.txt`, which contains one averaged value per duration index.
+
+2. **Convert the averaged series to WAV**
+
+   ```bash
+   # 48 kHz, simple moving-average smoothing window = 15
+   python3 tools/avg_mo_to_wav.py avg_mo_by_duration.txt mo_avg_ma15_48k.wav 48000 15
+
+   # 44.1 kHz version
+   python3 tools/avg_mo_to_wav.py avg_mo_by_duration.txt mo_avg_ma15_44k1.wav 44100 15
+   ```
+
+   Notes:
+
+   - The last argument is the moving-average window length (odd number recommended: 5, 9, 15, …).  
+     Larger windows reduce “grainy” noise but blur fast attacks.
+   - These WAVs are useful to verify:
+     - Overall length / tempo
+     - Rough pitch movement
+     - Whether multiple notes are being generated
+
+### 2. ACC-based WAV (experimental)
+
+If `IKAOPLL_vgm_tb.sv` is built with ACC logging enabled, the testbench will also write `samples_acc.txt`, one integer sample per `ACC_STRB` pulse.
+
+You can turn this directly into a WAV file:
+
+```bash
+# 48 kHz
+python3 tools/acc_to_wav.py samples_acc.txt acc_48k.wav
+
+# 44.1 kHz
+python3 tools/acc_to_wav.py samples_acc.txt acc_44k1.wav 44100
+```
+
+This path is closer to the mixed DAC input, but the resulting audio can sound noisy or sparse depending on how often `ACC_STRB` is asserted and how you interpret it. It is mainly intended for analysis / experimentation.
+
+### 3. Legacy direct Mo→WAV path
+
+For historical reasons, there is also a simple “raw text to WAV” helper:
 
 ```bash
 python3 tools/txt_to_wav.py samples_mo.txt out.wav
 ```
 
-This lets you listen to the simulated audio from the IKAOPLL core.
+This treats each `IMP_FLUC_MO` sample as an equally-spaced time series with a fixed sample rate. The Mo‑averaged pipeline above tends to give more stable results for musical tests.
 
 ---
+
+## Small analysis helpers
+
+- **`tools/analyze_mo_range.py`**
+
+  Compute min/max of `IMP_FLUC_MO` from `samples_mo.txt`:
+
+  ```bash
+  python3 tools/analyze_mo_range.py samples_mo.txt
+  ```
+
+- **`tools/analyze_duration.py`**
+
+  Inspect `durations.txt` (duration statistics, estimated sampling rate if you take one sample per duration):
+
+  ```bash
+  python3 tools/analyze_duration.py durations.txt
+  ```
+
+These are optional, but useful when iterating on the testbench or trying to understand timing behaviour.
