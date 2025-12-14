@@ -245,3 +245,105 @@ python3 tools/txt_to_wav.py samples_mo.txt out.wav
   「1 Duration を 1 サンプルとみなしたときの実効サンプリングレート」などを表示します。
 
 これらはテストベンチ／ツールチェインを調整するときの目安として使えます。
+
+## シミュレーションログから WAV を作る
+
+OPLL の動作確認やラフな試聴のために、テキストログを WAV に変換するツールを用意しています。
+
+### 1. ワンショットで参照 WAV を生成する
+
+`IKAOPLL_vgm_tb.sv` を実行すると、以下のテキストが生成されます。
+
+- `samples_mo.txt` – `IMP_FLUC_SIGNED_MO`（MO 側）
+- `samples_acc.txt` – `ACC_SIGNED`（オペレータ合成後）
+
+これらから **Mo ベース**と **ACC ベース**の 2 種類の参照 WAV を一度に作るラッパスクリプトが `tools/make_ref_wav.py` です。
+
+```bash
+python3 tools/make_ref_wav.py
+```
+
+カレントディレクトリに
+
+- `mo_ref_44k1.wav`
+- `acc_ref_44k1.wav`
+
+が生成されます（いずれも 1ch, 16bit）。
+
+#### Mo ベース参照 WAV (`mo_ref_44k1.wav`)
+
+内部では、従来の
+
+- `avg_mo_by_duration.py`
+- `avg_mo_to_wav.py`
+
+と同じ処理を行っています。
+
+1. `samples_mo.txt`（形式: `dur_idx value time_ps`）から  
+   duration インデックスごとに `value` を平均
+2. 平均列に対して簡易な移動平均フィルタ（窓長 15）
+3. 正規化して Fs=44.1kHz で WAV 出力
+
+特徴:
+
+- 音色はかなり簡素ですが、
+  - 全体の長さ
+  - テンポ
+  - ノートの出入り
+- を確認するには十分です。
+
+#### ACC ベース参照 WAV (`acc_ref_44k1.wav`)
+
+内部では、従来の `acc_decimate_to_wav.py` 相当の処理を行っています。  
+`ACC_SIGNED` を「内部サンプリングレート Fs_int ≒ 1.6MHz の等間隔サンプル」とみなし、  
+ローパス＋間引きで 44kHz 付近に落としています。
+
+処理の概要:
+
+1. `samples_acc.txt` を読み込み
+   - 行形式は `value` または `value time_ps`（先頭列だけ使用）
+   - 先頭に `x 0` などがある場合は警告を出しつつスキップ
+2. 内部サンプリングレートを **Fs_int = 1_600_000 Hz** と仮定
+3. 目標出力レート **Fs_out_target = 44_100 Hz** から
+   デシメーション係数 `decim ≈ Fs_int / Fs_out_target` を計算  
+   → 現状のテストでは `decim = 36`、有効出力レートは約 **44.44 kHz**
+4. 簡易ローパス（移動平均: 窓長 = `decim * 3`）を適用
+5. `decim` サンプルごとに 1 サンプルを取り出して間引き
+6. 正規化して WAV 出力
+
+この WAV は
+
+- Mo 版よりノイジーですが、
+- 長さ・音量・ノートの鳴るタイミングは VGM の印象にかなり近く、
+- 波形としては ACC_SIGNED に近い「FM らしい形」を保ったまま  
+  44kHz 近傍に落としたもの
+
+になっています。
+
+#### Verilator / C 実装との対応
+
+将来、Verilator + C/C++ ドライバ側で同じ処理を実装する場合は、次の点を合わせておくと比較が容易です。
+
+- 内部レート仮定: `Fs_int = 1_600_000 Hz`
+- デシメーション係数: `decim = 36`
+- 実効出力レート: `Fs_out ≈ 44_444.44 Hz`
+- 簡易 LPF:
+  - 移動平均窓長 ≒ `decim * 3`
+- 正規化:
+  - `max(|x|)` を ±`0.9 * 32767` に合わせて 16bit 変換
+
+この README に書かれている仕様と `tools/make_ref_wav.py` の実装が「期待値」となり、  
+C 側の WAV 出力とバイト単位（または ±1 LSB 程度）で比較できるようになります。
+
+### 2. 個別ツールを直接使う場合
+
+ワンショットスクリプトではなく、個別のツールを直接触りたい場合は、従来どおり:
+
+- Mo 系
+  - `tools/avg_mo_by_duration.py`
+  - `tools/avg_mo_to_wav.py`
+- ACC 系
+  - `tools/acc_to_wav.py`（高 Fs=1MHz などで波形・スペクトル確認用）
+  - `tools/acc_decimate_to_wav.py`（内部 Fs 仮定 + ローパス + デシメーション）
+
+を使うこともできます。

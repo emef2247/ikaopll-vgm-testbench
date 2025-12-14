@@ -235,6 +235,7 @@ module IKAOPLL_vgm_tb;
         $display("[TB] Logging initialized.");
     end
 
+    // EMUCLK カウンタ
     always @(posedge EMUCLK or negedge IC_n) begin
         if (!IC_n)
             cyc_cnt <= 0;
@@ -242,6 +243,7 @@ module IKAOPLL_vgm_tb;
             cyc_cnt <= cyc_cnt + 1;
     end
 
+    // Duration ログ
     always @(posedge EMUCLK or negedge IC_n) begin
         if (!IC_n) begin
             ACC_STRB_q   <= 1'b0;
@@ -269,6 +271,7 @@ module IKAOPLL_vgm_tb;
         end
     end
 
+    // MO ログ
     always @(posedge EMUCLK) begin
         if (DAC_EN_MO) begin
             longint time_ps;
@@ -280,9 +283,14 @@ module IKAOPLL_vgm_tb;
         end
     end
 
+    // ACC ログ（値 + 時刻[ps]）
     always @(posedge EMUCLK) begin
         if (ACC_STRB) begin
-            $fwrite(fh_acc, "%0d\n", $signed(ACC_SIGNED));
+            longint time_ps;
+            time_ps = cyc_cnt * 10;
+            $fwrite(fh_acc, "%0d %0d\n",
+                    $signed(ACC_SIGNED),
+                    time_ps);
         end
     end
 
